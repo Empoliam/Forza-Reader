@@ -7,12 +7,17 @@ import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import javafx.application.Application;
+import javafx.application.Platform;
+import javafx.beans.property.FloatProperty;
+import javafx.beans.property.IntegerProperty;
+import javafx.beans.property.SimpleFloatProperty;
+import javafx.beans.property.SimpleIntegerProperty;
+import javafx.collections.ObservableList;
 import javafx.concurrent.Task;
 import javafx.geometry.Insets;
 import javafx.scene.Scene;
 import javafx.scene.chart.LineChart;
 import javafx.scene.chart.NumberAxis;
-import javafx.scene.chart.ScatterChart;
 import javafx.scene.chart.XYChart;
 import javafx.scene.chart.XYChart.Series;
 import javafx.scene.control.Label;
@@ -27,11 +32,19 @@ public class Main extends Application {
 	float XPOS;
 	float YPOS;
 	float ZPOS;
-	
-	int MS = 0;
+	IntegerProperty LAPNO = new SimpleIntegerProperty(-1);
+	FloatProperty LAPTIME = new SimpleFloatProperty(0); 
 
+	IntegerProperty MS = new SimpleIntegerProperty(0);
+
+	int timeDivision = 128;
 	float maxRecordedSpeed = 10f;
-	
+	float maxRecordedTime = 5f;
+	int maxSeries = 3;
+	ObservableList<Series<Number, Number>> chartSeries;
+	NumberAxis xSpeedAxis = new NumberAxis();
+	NumberAxis ySpeedAxis = new NumberAxis();
+
 	DatagramSocket input;
 	Thread T;
 
@@ -59,8 +72,6 @@ public class Main extends Application {
 				@Override
 				protected Void call() throws Exception {
 
-					int lCounter = 0;
-
 					while(loop.get()) {
 
 						byte buf[] = new byte[500];	
@@ -69,19 +80,30 @@ public class Main extends Application {
 						input.receive(packet);
 						byte[] currentData = packet.getData();
 
-						UNPAUSE = getBytes(currentData,0,4).getInt();
-						RPM = getBytes(currentData,16,20).getFloat();
-						SPEED = getBytes(currentData,244,248).getFloat() * 2.237f;
-						XPOS = getBytes(currentData,232,236).getFloat();
-						YPOS = getBytes(currentData,236,240).getFloat();
-						ZPOS = getBytes(currentData,240,244).getFloat();
+						Platform.runLater(() -> {
 
-						if(UNPAUSE == 1) { 
-							MS += 16;
-							lCounter++;
-							updateMessage(Integer.toString(lCounter));
-						}
-						
+							UNPAUSE = getBytes(currentData,0,4).getInt();
+
+							if(UNPAUSE == 1) { 
+
+								MS.set(MS.get() + 16);
+
+								RPM = getBytes(currentData,16,20).getFloat();
+
+								SPEED = getBytes(currentData,244,248).getFloat() * 2.237f;
+
+								XPOS = getBytes(currentData,232,236).getFloat();
+								YPOS = getBytes(currentData,236,240).getFloat();
+								ZPOS = getBytes(currentData,240,244).getFloat();
+
+								LAPNO.set((int) getBytes(currentData, 300, 302).get());
+
+								LAPTIME.set(getBytes(currentData, 292, 296).getFloat());
+
+							}
+
+						});
+
 						Thread.sleep(16);
 
 					}	
@@ -96,52 +118,32 @@ public class Main extends Application {
 			T.start();
 
 			Label rpmLabel = new Label(Float.toString(RPM));
+			Label lapLabel = new Label(Integer.toString(LAPNO.get()));
 
-			NumberAxis xSpeedAxis = new NumberAxis();
-			NumberAxis ySpeedAxis = new NumberAxis();
-			XYChart.Series<Number, Number> speedSeries = new Series<>();
 			LineChart<Number, Number> speedChart = new LineChart<>(xSpeedAxis, ySpeedAxis);
 
-			speedChart.getData().add(speedSeries);
+			chartSeries = speedChart.getData();
+
+
+
 			speedChart.setPrefWidth(500);
 			speedChart.setPrefHeight(500);
 			speedChart.setAnimated(false);			
 
-			int maxTime = 60*1000;
-			int timeDivision = 128;
-			int maxPoints = maxTime / 64;
-			
 			xSpeedAxis.setAutoRanging(false);
 			xSpeedAxis.setMinorTickCount(0);
 			xSpeedAxis.setLowerBound(0);
-			xSpeedAxis.setTickUnit(5000);
+			xSpeedAxis.setTickUnit(5);
 
 			speedChart.setCreateSymbols(false);
 
 			ySpeedAxis.setAutoRanging(false);
 			ySpeedAxis.setTickUnit(25);
-			ySpeedAxis.setUpperBound(maxRecordedSpeed);
-			ySpeedAxis.setLowerBound(0);
-			
-			NumberAxis xPosAxis = new NumberAxis();
-			NumberAxis yPosAxis = new NumberAxis();
-			XYChart.Series<Number, Number> posSeries = new Series<>();
-			ScatterChart<Number, Number> posChart = new ScatterChart<>(xPosAxis, yPosAxis);
+			ySpeedAxis.setLowerBound(0);	
 
-			posChart.getData().add(posSeries);
-			posChart.setPrefWidth(500);
-			posChart.setPrefHeight(500);
-			posChart.setAnimated(false);			
-			
-			
-			xSpeedAxis.setAutoRanging(true);
+			resetChart();
 
-			speedChart.setCreateSymbols(false);
-
-			ySpeedAxis.setAutoRanging(true);
-
-
-			bgLoop.messageProperty().addListener((observable, old, updated) -> {
+			MS.addListener((observable, old, updated) -> {
 
 				rpmLabel.setText(Float.toString(RPM) + " RPM");	
 
@@ -149,29 +151,40 @@ public class Main extends Application {
 					maxRecordedSpeed = SPEED;
 					ySpeedAxis.setUpperBound(maxRecordedSpeed);
 				}
-				
-				if(MS % timeDivision == 0) {
-					
-					speedSeries.getData().add(new XYChart.Data<Number, Number>(MS, SPEED));
-					if(speedSeries.getData().size() > maxPoints) {
-						speedSeries.getData().remove(0, speedSeries.getData().size() - maxPoints);
-						xSpeedAxis.setLowerBound(xSpeedAxis.getLowerBound() + timeDivision);
-						xSpeedAxis.setUpperBound(xSpeedAxis.getUpperBound() + timeDivision);
 
-					}
-					xSpeedAxis.setUpperBound(xSpeedAxis.getUpperBound() + timeDivision);
-					
-					posSeries.getData().add(new XYChart.Data<Number, Number>(XPOS, ZPOS));
-					
+				if(maxRecordedTime < LAPTIME.get()) { 
+					maxRecordedTime = LAPTIME.get();
+					xSpeedAxis.setUpperBound(maxRecordedTime);
 				}
-				
+
+				if(MS.get() % timeDivision == 0) {
+
+					chartSeries.get(maxSeries-1).getData().add(new XYChart.Data<Number, Number>(LAPTIME.get(), SPEED));
+
+					xSpeedAxis.setUpperBound(xSpeedAxis.getUpperBound() + timeDivision/1000);
+
+				}
+
+			});
+
+			LAPNO.addListener((observable, oldValue, newValue) -> {
+
+				if((int) newValue == 0) { 
+					resetChart();
+				} else {
+					lapLabel.setText("Lap " + newValue);
+					chartSeries.remove(0);
+					Series<Number, Number> newSeries = new Series<Number, Number>();
+					newSeries.setName(Integer.toString(LAPNO.get()));
+					chartSeries.add(newSeries);
+				}
 			});
 
 			VBox mainBox = new VBox();	
 			mainBox.setPadding(new Insets(10));
 			mainBox.setMinWidth(200d);
 
-			mainBox.getChildren().addAll(rpmLabel, speedChart, posChart);
+			mainBox.getChildren().addAll(rpmLabel, lapLabel, speedChart);
 
 			Scene mainScene = new Scene(mainBox);
 			mainStage.setScene(mainScene);
@@ -189,6 +202,22 @@ public class Main extends Application {
 
 	private ByteBuffer getBytes(byte[] buffer, int offset, int length) {
 		return ByteBuffer.wrap(Arrays.copyOfRange(buffer, offset, length)).order(ByteOrder.LITTLE_ENDIAN);
+	}
+
+	private void resetChart() {
+
+		chartSeries.clear();
+
+		for(int s = 0; s < maxSeries; s++) { 
+			chartSeries.add(new Series<Number, Number>());
+		}
+
+		maxRecordedSpeed = 0;
+		maxRecordedTime = 0;
+
+		xSpeedAxis.setUpperBound(maxRecordedTime);
+		ySpeedAxis.setUpperBound(maxRecordedSpeed);
+
 	}
 
 }
